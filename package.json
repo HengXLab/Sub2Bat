@@ -1,0 +1,50 @@
+{
+  "name": "sub2bat",
+  "private": true,
+  "version": "1.1.2",
+  "description": "Sub2Bat desktop application for Sub2API account testing and batch operations",
+  "author": "H.X. (Sub2Bat modifications and maintenance)",
+  "contributors": [
+    "H.X."
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HengXLab/Sub2Bat.git"
+  },
+  "homepage": "https://github.com/HengXLab/Sub2Bat",
+  "bugs": {
+    "url": "https://github.com/HengXLab/Sub2Bat/issues"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "check": "vue-tsc --noEmit && tsc --noEmit --project tsconfig.node.json",
+    "test": "vitest run",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "verify": "npm run check && npm run test && npm run test:rust",
+    "build": "npm run verify && vite build",
+    "build:frontend": "vite build",
+    "test:watch": "vitest",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "build:installer": "tauri build --bundles nsis"
+  },
+  "dependencies": {
+    "@lucide/vue": "^1.24.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-fs": "^2.5.1",
+    "fflate": "^0.8.3",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^26.1.1",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.3",
+    "vitest": "^4.1.10",
+    "vue-tsc": "^2.1.10"
+  }
+}
