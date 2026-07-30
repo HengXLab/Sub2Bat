@@ -10,6 +10,16 @@ Sub2Bat 是基于 [ljh-696/sub2api-batch-tester](https://github.com/ljh-696/sub2
 
 本项目不是 Sub2API 官方产品，也不代表原项目维护者对本项目提供背书。版权与许可详情见 [LICENSE](LICENSE) 和 [NOTICE.md](NOTICE.md)。
 
+## 界面预览
+
+### 账号管理与批量操作
+
+![Sub2Bat 账号管理与批量操作界面](docs/images/sub2bat-main.png)
+
+### 批量自动化
+
+![Sub2Bat 批量自动化界面](docs/images/sub2bat-automation.png)
+
 ## 功能
 
 - 输入自己的 sub2api 站点地址、管理员邮箱和密码即可使用，不内置任何站点或账号信息。
