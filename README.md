@@ -2,13 +2,32 @@
 
 一个可分享的 Windows 桌面工具：登录任意兼容的 sub2api 管理站点后，集中查看账号并批量测试连接。
 
+## 项目介绍
+
+Sub2API 管理端在测试账号活性时，需要逐个账号手动触发；当账号数量较多时，测试、筛选和后续处理会变得繁琐。Sub2Bat 在现有批量测试项目的基础上继续改进，把账号测活、批量维护、导出、格式转换、报告和自动化集中到一个 Windows 桌面工具中。
+
+- **批量测活**：选择当前页、已选账号或全部筛选结果，按指定模型和并发数批量测试账号活性，并实时汇总状态与响应耗时。
+- **批量维护**：补充 Sub2API 管理端缺少或需要逐项完成的操作，包括批量重命名、批量设置优先级、批量设置账号并发、移动和删除等。
+- **批量导出**：可将账号导出为 Sub2API 备份格式或 CPA 格式，并在导出前核验账号范围，降低误导出风险。
+- **本地格式转换**：支持 CPA 与 Sub2API 格式双向转换，文件解析、转换和打包均在本机完成，不会上传认证数据。
+- **测活报告**：可导出测试报告，用于统计正常、限流、连接中断、错误、停用等账号状态及响应耗时。
+- **自动化操作**：可按平台、分组和账号状态组合筛选条件，并依次执行多种操作；既支持单次执行，也支持按时间间隔自动重复。自动重复时会在上一轮完全结束后再开始等待间隔，避免任务重叠。
+
+## 与 Sub2API 更新的关系
+
+Sub2API 更新较快，直接修改 Sub2API 服务端源码来增加这些功能，后续升级时往往需要反复处理本地改动与上游更新之间的合并问题；但有些新版本的重要功能又使得升级不可避免。
+
+Sub2Bat 将批量测活、批量维护、导出、转换、报告和自动化放在独立的客户端中实现，不改动 Sub2API 服务端源码。因此，升级 Sub2API 后通常不需要重新合并 Sub2Bat 的源码改动，理论上只要稳定的管理 API 仍保持兼容，Sub2Bat 就可以继续使用。若上游移除接口、改变接口语义或引入破坏性 API 更新，则仍需要同步适配 Sub2Bat。
+
 ## 来源与维护
 
 Sub2Bat 是基于 [ljh-696/sub2api-batch-tester](https://github.com/ljh-696/sub2api-batch-tester) `v1.1.0` 开发的独立衍生版本，由 H.X. 修改和维护。
 
 原项目 Copyright (c) 2026 Picard-ljh，并依据 MIT License 开源。Sub2Bat 主要增加和完善了账号筛选、批量操作、自动执行、导出、窗口交互及安全性增强等功能。
 
-本项目不是 Sub2API 官方产品，也不代表原项目维护者对本项目提供背书。版权与许可详情见 [LICENSE](LICENSE) 和 [NOTICE.md](NOTICE.md)。
+本地 CPA/Sub2API 双向转换功能参考了 [gtxx3600/CPA2sub2API](https://github.com/gtxx3600/CPA2sub2API) 的公开实现与转换约定。该项目 Copyright (c) 2026 Hanhaofu，并依据 MIT License 开源，完整声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+本项目不是 Sub2API 官方产品，也不代表相关原项目维护者对本项目提供背书。版权与许可详情见 [LICENSE](LICENSE)、[NOTICE.md](NOTICE.md) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 界面预览
 
@@ -19,6 +38,10 @@ Sub2Bat 是基于 [ljh-696/sub2api-batch-tester](https://github.com/ljh-696/sub2
 ### 批量自动化
 
 ![Sub2Bat 批量自动化界面](docs/images/sub2bat-automation.png)
+
+### 本地文件转换
+
+![Sub2Bat CPA 与 Sub2API 本地文件转换界面](docs/images/sub2bat-conversion.png)
 
 ## 功能
 
