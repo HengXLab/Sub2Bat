@@ -48,6 +48,7 @@ type AccountPageWire = Partial<AccountPage> & {
 
 type AccountCollectionRequest = Omit<AccountPageRequest, "page" | "pageSize">;
 type AccountCollectionGuard = ReturnType<typeof createModelCatalogRequestGuard>;
+type AccountLocalFilterPredicate = (account: Account) => boolean;
 type BatchCompletionEvent = Extract<BatchEvent, { kind: "complete" }>;
 interface BatchCompletionResult {
   completion: BatchCompletionEvent;
@@ -180,18 +181,18 @@ export function useBatch() {
   }
 
   /**
-   * The official account endpoint cannot filter subscription labels such as
-   * `free` or `k12`. Scan its bounded pages and publish one locally filtered
-   * page so the table's total and pagination remain truthful.
+   * Scans a bounded official account scope and publishes one locally filtered
+   * page. This is needed for predicates that the list endpoint cannot express
+   * exactly, such as subscription labels and derived runtime states.
    */
-  async function loadAccountPageForPlanType(
+  async function loadAccountPageWithLocalFilter(
     input: AccountPageRequest,
-    planType: string,
     maximum: number,
+    predicate: AccountLocalFilterPredicate,
+    filterLabel: string,
   ): Promise<AccountPage | null> {
-    if (!hasAccountPlanTypeFilter(planType)) return loadAccountPage(input);
     if (!Number.isSafeInteger(maximum) || maximum <= 0) {
-      throw new Error("账户类型筛选上限无效，无法安全遍历账号。");
+      throw new Error(`${filterLabel}筛选上限无效，无法安全遍历账号。`);
     }
 
     const request = accountRequests.begin();
@@ -214,22 +215,22 @@ export function useBatch() {
         }), sourceRequest);
         if (!accountRequests.isCurrent(request)) return null;
         if (source.page !== sourcePage) {
-          throw new Error(`账号列表返回了错误页码（请求第 ${sourcePage} 页，收到第 ${source.page} 页），已停止账户类型筛选。`);
+          throw new Error(`账号列表返回了错误页码（请求第 ${sourcePage} 页，收到第 ${source.page} 页），已停止${filterLabel}筛选。`);
         }
         if (source.hasMore && source.items.length === 0) {
-          throw new Error("账号列表返回空页但仍声明存在下一页，已停止账户类型筛选以避免遗漏账号。");
+          throw new Error(`账号列表返回空页但仍声明存在下一页，已停止${filterLabel}筛选以避免遗漏账号。`);
         }
 
         truncated ||= source.truncated;
         for (const account of source.items) {
           if (!seenIds.add(account.id)) {
-            throw new Error("账号列表存在重复账号页，已停止账户类型筛选以避免遗漏或重复账号。");
+            throw new Error(`账号列表存在重复账号页，已停止${filterLabel}筛选以避免遗漏或重复账号。`);
           }
           scanned += 1;
           if (scanned > maximum) {
-            throw new Error(`账户类型筛选范围超过 ${maximum.toLocaleString()} 个账号，无法安全在本地分页。请先缩小其他筛选条件。`);
+            throw new Error(`${filterLabel}筛选范围超过 ${maximum.toLocaleString()} 个账号，无法安全在本地分页。请先缩小其他筛选条件。`);
           }
-          if (matchesAccountPlanTypeFilter(account.planType, planType)) {
+          if (predicate(account)) {
             matches.push(account);
           }
         }
@@ -238,7 +239,7 @@ export function useBatch() {
         if (!hasMore) break;
         sourcePage += 1;
         if (sourcePage > 999_999) {
-          throw new Error("账户类型筛选范围超过可浏览的页码上限，无法安全遍历账号。");
+          throw new Error(`${filterLabel}筛选范围超过可浏览的页码上限，无法安全遍历账号。`);
         }
       }
 
@@ -266,6 +267,21 @@ export function useBatch() {
         loadingAccounts.value = false;
       }
     }
+  }
+
+  /** Compatibility wrapper retained for existing plan-type callers. */
+  async function loadAccountPageForPlanType(
+    input: AccountPageRequest,
+    planType: string,
+    maximum: number,
+  ): Promise<AccountPage | null> {
+    if (!hasAccountPlanTypeFilter(planType)) return loadAccountPage(input);
+    return loadAccountPageWithLocalFilter(
+      input,
+      maximum,
+      (account) => matchesAccountPlanTypeFilter(account.planType, planType),
+      "账户类型",
+    );
   }
 
   /** Compatibility wrapper for callers that only need the first bounded page. */
@@ -373,6 +389,7 @@ export function useBatch() {
   async function collectModelScopeAccountIds(
     requestInput: AccountCollectionRequest,
     maximum: number,
+    predicate?: AccountLocalFilterPredicate,
   ): Promise<number[] | null> {
     if (!Number.isSafeInteger(maximum) || maximum <= 0) {
       throw new Error(modelScopeCollectionMessages.invalidMaximum);
@@ -381,6 +398,7 @@ export function useBatch() {
     const pageSize = 200;
     const accountIds: number[] = [];
     const seenIds = new Set<number>();
+    let scanned = 0;
     let page = 1;
     let hasMore = true;
 
@@ -396,15 +414,16 @@ export function useBatch() {
       if (result.hasMore && result.items.length === 0) {
         throw new Error(modelScopeCollectionMessages.emptyPageWithMore);
       }
-      if (accountIds.length + result.items.length > maximum) {
-        throw new Error(modelScopeCollectionMessages.maximumExceeded(maximum));
-      }
-
       for (const account of result.items) {
         if (seenIds.has(account.id)) {
           throw new Error(modelScopeCollectionMessages.duplicateAccount);
         }
         seenIds.add(account.id);
+        scanned += 1;
+        if (scanned > maximum) {
+          throw new Error(modelScopeCollectionMessages.maximumExceeded(maximum));
+        }
+        if (predicate && !predicate(account)) continue;
         accountIds.push(account.id);
       }
       hasMore = result.hasMore;
@@ -936,6 +955,7 @@ export function useBatch() {
     invalidatePlanTypeCollection,
     invalidateAccounts,
     loadAccountPage,
+    loadAccountPageWithLocalFilter,
     loadAccountPageForPlanType,
     loadAccounts,
     loadModels,

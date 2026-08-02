@@ -13,7 +13,7 @@ use reqwest::{
 };
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -372,6 +372,17 @@ pub struct Account {
         deserialize_with = "deserialize_optional_scalar_string"
     )]
     pub updated_at: Option<String>,
+}
+
+/// Public account fields captured by the UI at selection time. Current
+/// Sub2API backups deliberately omit source IDs, so these fields let the
+/// client verify the selected scope without changing the official backup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExportAccountIdentity {
+    pub id: i64,
+    pub name: String,
+    pub platform: String,
+    pub account_type: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -861,8 +872,8 @@ impl AccountOperationResult {
 }
 
 /// Default page size for the compatibility `list_accounts` command.
-pub const DEFAULT_ACCOUNT_PAGE_SIZE: usize = 100;
-/// The UI offers 20, 50, 100, and 200. Accepting other positive values up to
+pub const DEFAULT_ACCOUNT_PAGE_SIZE: usize = 20;
+/// The UI offers 10, 20, 50, 100, and 200. Accepting other positive values up to
 /// this ceiling keeps the backend compatible without allowing an oversized
 /// server response to be materialized in one Tauri invocation.
 pub const MAX_ACCOUNT_PAGE_SIZE: usize = 200;
@@ -1098,6 +1109,20 @@ impl TestFailure {
     }
 }
 
+/// Keep a transport timeout visible to the renderer even when reqwest's
+/// top-level display text hides the underlying timeout source.
+fn test_transport_failure_message(
+    context: &str,
+    timed_out: bool,
+    error: impl std::fmt::Display,
+) -> String {
+    if timed_out {
+        format!("{context} timed out")
+    } else {
+        format!("{context} failed: {error}")
+    }
+}
+
 #[derive(Clone)]
 pub struct Sub2ApiClient {
     server: ServerUrl,
@@ -1143,6 +1168,27 @@ impl Sub2ApiClient {
             }),
         ))
         .await
+    }
+
+    /// Completes Sub2API's separate step-up verification for the currently
+    /// authenticated admin session. This is not the same as login 2FA: recent
+    /// step-up verification is required by newer servers before exporting
+    /// credential-bearing account backups.
+    pub async fn complete_step_up_totp(
+        &self,
+        access_token: &str,
+        code: &str,
+    ) -> Result<(), String> {
+        self.request_value(self.step_up_totp_request(access_token, code))
+            .await
+            .map(|_| ())
+    }
+
+    fn step_up_totp_request(&self, access_token: &str, code: &str) -> RequestBuilder {
+        self.http
+            .post(self.endpoint("user/totp/step-up"))
+            .bearer_auth(access_token)
+            .json(&serde_json::json!({ "code": code }))
     }
 
     pub async fn refresh(&self, refresh_token: &str) -> Result<RefreshTokens, RefreshError> {
@@ -1394,9 +1440,12 @@ impl Sub2ApiClient {
         &self,
         access_token: &str,
         account_ids: &[i64],
+        account_identities: &[ExportAccountIdentity],
         include_proxies: bool,
     ) -> Result<Value, String> {
         let account_ids = normalize_export_account_ids(account_ids)?;
+        let account_identities =
+            normalize_export_account_identities(&account_ids, account_identities)?;
         let batches = self.export_account_id_batches(&account_ids, include_proxies)?;
         let mut merged: Option<Value> = None;
         let mut received_bytes = 0usize;
@@ -1416,7 +1465,7 @@ impl Sub2ApiClient {
             }
             validate_export_payload_shape(&payload)?;
             let requested_ids = account_ids.iter().copied().collect::<HashSet<_>>();
-            validate_export_payload_selection(&payload, &requested_ids)?;
+            validate_export_payload_selection(&payload, &requested_ids, &account_identities)?;
 
             if let Some(existing) = merged.as_mut() {
                 merge_export_payload(existing, payload)?;
@@ -1664,7 +1713,14 @@ impl Sub2ApiClient {
             _ = cancellation.cancelled() => return Err(TestFailure::from_message("Test cancelled")),
             response = request => response,
         }
-        .map_err(|error| TestFailure::from_message(format!("Test request failed: {error}")))?;
+        .map_err(|error| {
+            let timed_out = error.is_timeout();
+            TestFailure::from_message(test_transport_failure_message(
+                "Test request",
+                timed_out,
+                error,
+            ))
+        })?;
         let http_status = response.status().as_u16();
 
         if !response.status().is_success() {
@@ -1676,15 +1732,18 @@ impl Sub2ApiClient {
             return Err(TestFailure::from_message(error));
         }
 
-        let mut byte_budget = SseByteBudget::new(
-            MAX_TEST_SSE_EVENT_BYTES,
-            MAX_TEST_SSE_TOTAL_BYTES,
-        );
-        let limited_stream = response.bytes_stream().map(move |chunk| -> Result<_, String> {
-            let chunk = chunk.map_err(|error| error.to_string())?;
-            byte_budget.observe(chunk.as_ref())?;
-            Ok(chunk)
-        });
+        let mut byte_budget =
+            SseByteBudget::new(MAX_TEST_SSE_EVENT_BYTES, MAX_TEST_SSE_TOTAL_BYTES);
+        let limited_stream = response
+            .bytes_stream()
+            .map(move |chunk| -> Result<_, String> {
+                let chunk = chunk.map_err(|error| {
+                    let timed_out = error.is_timeout();
+                    test_transport_failure_message("Test stream", timed_out, error)
+                })?;
+                byte_budget.observe(chunk.as_ref())?;
+                Ok(chunk)
+            });
         let mut stream = limited_stream.eventsource();
         loop {
             let next = tokio::select! {
@@ -1694,7 +1753,9 @@ impl Sub2ApiClient {
             let Some(next) = next else {
                 break;
             };
-            let event = next.map_err(|error| TestFailure::from_message(format!("Test stream failed: {error}")))?;
+            let event = next.map_err(|error| {
+                TestFailure::from_message(format!("Test stream failed: {error}"))
+            })?;
             let Some(event) = parse_data_event(&format!("data: {}", event.data))
                 .map_err(TestFailure::from_message)?
             else {
@@ -1914,28 +1975,58 @@ fn validate_export_payload_shape(payload: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Every exported credential must include its source account ID. A server that
-/// omits IDs could have ignored the selected-ID query, and record counts alone
-/// cannot prove that the returned credentials belong to the chosen accounts.
+/// Verifies that the backup response only contains selected accounts. Older
+/// compatible servers return a source `id` for every record. Current official
+/// Sub2API backups intentionally omit IDs, so those records are checked
+/// against the non-sensitive selection snapshot supplied by the UI.
 fn validate_export_payload_selection(
     payload: &Value,
     requested_ids: &HashSet<i64>,
+    account_identities: &HashMap<i64, ExportAccountIdentity>,
 ) -> Result<(), String> {
     let accounts = payload
         .get("accounts")
         .and_then(Value::as_array)
         .ok_or_else(|| "服务器返回的账号导出数据缺少 accounts 数组。".to_owned())?;
+
+    let records_with_id = accounts
+        .iter()
+        .filter(|account| {
+            account
+                .as_object()
+                .is_some_and(|object| object.contains_key("id"))
+        })
+        .count();
+
+    if records_with_id == 0 {
+        // An empty legacy response cannot prove an unexpected credential was
+        // returned, so retain the former permissive behavior unless it uses
+        // the official shadow-account marker.
+        if accounts.is_empty()
+            && !payload
+                .as_object()
+                .is_some_and(|object| object.contains_key("skipped_shadows"))
+        {
+            return Ok(());
+        }
+        return validate_idless_export_payload(payload, requested_ids, account_identities);
+    }
+    if records_with_id != accounts.len() {
+        return Err(
+            "服务器返回的账号导出结果混合了带 ID 和不带 ID 的记录，无法安全验证选择范围。"
+                .to_owned(),
+        );
+    }
+
     let mut returned_ids = HashSet::with_capacity(accounts.len());
 
     for (index, account) in accounts.iter().enumerate() {
         let object = account.as_object().ok_or_else(|| {
             format!("服务器返回的账号导出记录 #{index} 不是对象，无法验证选择范围。")
         })?;
-        let id = object.get("id").ok_or_else(|| {
-            format!(
-                "服务器返回的账号导出记录 #{index} 未提供可验证的账号 ID；已停止导出以保护未选择账号的凭据。"
-            )
-        })?;
+        let id = object
+            .get("id")
+            .expect("records_with_id only counts objects with IDs");
         let account_id = export_account_id(id)
             .filter(|account_id| *account_id > 0)
             .ok_or_else(|| {
@@ -1954,6 +2045,113 @@ fn validate_export_payload_selection(
     }
 
     Ok(())
+}
+
+/// Validates the current official `sub2api-data` account entry shape. The
+/// upstream format is intentionally portable and therefore has no database
+/// ID; matching all records one-to-one with the selected account snapshot
+/// catches ignored `ids` filters without adding fields to the backup file.
+fn validate_idless_export_payload(
+    payload: &Value,
+    requested_ids: &HashSet<i64>,
+    account_identities: &HashMap<i64, ExportAccountIdentity>,
+) -> Result<(), String> {
+    if account_identities.len() != requested_ids.len()
+        || requested_ids
+            .iter()
+            .any(|account_id| !account_identities.contains_key(account_id))
+    {
+        return Err(
+            "当前 Sub2API 返回不含账号 ID 的官方备份格式，但所选账号快照不完整。请刷新账号列表后重新选择并导出。"
+                .to_owned(),
+        );
+    }
+
+    let accounts = payload
+        .get("accounts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "服务器返回的账号导出数据缺少 accounts 数组。".to_owned())?;
+    let skipped_shadows = export_skipped_shadows(payload)?;
+    let returned_or_skipped = accounts
+        .len()
+        .checked_add(skipped_shadows)
+        .ok_or_else(|| "账号导出记录计数溢出，已停止导出。".to_owned())?;
+    if returned_or_skipped != requested_ids.len() {
+        return Err(format!(
+            "服务器返回的官方备份包含 {} 条账号和 {} 个跳过的影子账号，与本次选择的 {} 个账号不一致，已停止导出以保护未选择账号的凭据。",
+            accounts.len(),
+            skipped_shadows,
+            requested_ids.len()
+        ));
+    }
+
+    let mut expected = HashMap::<(String, String, String), usize>::new();
+    for account_id in requested_ids {
+        let identity = account_identities
+            .get(account_id)
+            .expect("selection snapshots were checked above");
+        *expected
+            .entry((
+                identity.name.clone(),
+                identity.platform.clone(),
+                identity.account_type.clone(),
+            ))
+            .or_default() += 1;
+    }
+
+    for (index, account) in accounts.iter().enumerate() {
+        let object = account.as_object().ok_or_else(|| {
+            format!("服务器返回的账号导出记录 #{index} 不是对象，无法验证选择范围。")
+        })?;
+        let name = official_export_identity_field(object, "name", index)?;
+        let platform = official_export_identity_field(object, "platform", index)?;
+        let account_type = official_export_identity_field(object, "type", index)?;
+        if !object.get("credentials").is_some_and(Value::is_object) {
+            return Err(format!(
+                "服务器返回的账号导出记录 #{index} 不符合官方备份格式（credentials 必须是对象）。"
+            ));
+        }
+
+        let key = (
+            name.to_owned(),
+            platform.to_owned(),
+            account_type.to_owned(),
+        );
+        let Some(remaining) = expected.get_mut(&key) else {
+            return Err(format!(
+                "服务器返回了不属于本次选择的账号“{name}”（{platform}/{account_type}），已停止导出以保护账号凭据。"
+            ));
+        };
+        if *remaining == 0 {
+            return Err(format!(
+                "服务器在导出结果中重复返回账号“{name}”（{platform}/{account_type}），已停止生成可能损坏的备份。"
+            ));
+        }
+        *remaining -= 1;
+    }
+
+    Ok(())
+}
+
+fn official_export_identity_field<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    field: &str,
+    index: usize,
+) -> Result<&'a str, String> {
+    object.get(field).and_then(Value::as_str).ok_or_else(|| {
+        format!("服务器返回的账号导出记录 #{index} 不符合官方备份格式（缺少字符串字段 {field}）。")
+    })
+}
+
+fn export_skipped_shadows(payload: &Value) -> Result<usize, String> {
+    let Some(value) = payload.get("skipped_shadows") else {
+        return Ok(0);
+    };
+    let count = value
+        .as_u64()
+        .ok_or_else(|| "服务器返回的账号导出数据中的 skipped_shadows 不是非负整数。".to_owned())?;
+    usize::try_from(count)
+        .map_err(|_| "服务器返回的账号导出数据中的 skipped_shadows 超出本机范围。".to_owned())
 }
 
 #[derive(Debug)]
@@ -2049,6 +2247,32 @@ fn normalize_export_account_ids(account_ids: &[i64]) -> Result<Vec<i64>, String>
         if seen.insert(*account_id) {
             normalized.push(*account_id);
         }
+    }
+    Ok(normalized)
+}
+
+fn normalize_export_account_identities(
+    account_ids: &[i64],
+    account_identities: &[ExportAccountIdentity],
+) -> Result<HashMap<i64, ExportAccountIdentity>, String> {
+    // Older callers can still use a server that returns per-record IDs. The
+    // snapshot is required only when the server uses the new official format.
+    if account_identities.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let requested_ids = account_ids.iter().copied().collect::<HashSet<_>>();
+    let mut normalized = HashMap::with_capacity(account_identities.len());
+    for identity in account_identities {
+        if !requested_ids.contains(&identity.id) {
+            return Err("账号导出快照包含未选择的账号 ID。".to_owned());
+        }
+        if normalized.insert(identity.id, identity.clone()).is_some() {
+            return Err("账号导出快照包含重复的账号 ID。".to_owned());
+        }
+    }
+    if normalized.len() != requested_ids.len() {
+        return Err("账号导出快照不完整。请刷新账号列表后重新选择并导出。".to_owned());
     }
     Ok(normalized)
 }
@@ -2159,6 +2383,11 @@ async fn response_error(response: Response) -> String {
         .and_then(response_error_message)
         .filter(|message| !message.trim().is_empty())
         .unwrap_or_else(|| "The server rejected the request".to_owned());
+    let message = response_value
+        .as_ref()
+        .and_then(response_step_up_error_code)
+        .map(|code| format!("{message} [Sub2API error: {code}]"))
+        .unwrap_or(message);
     let envelope_code = response_value
         .as_ref()
         .and_then(|value| value.get("code"))
@@ -2194,6 +2423,16 @@ fn response_error_message(value: &Value) -> Option<String> {
                 (None, None) => None,
             }
         })
+}
+
+/// Newer Sub2API step-up responses carry a machine-readable `error` value.
+/// Preserve it alongside the human message so the desktop UI can distinguish
+/// an export verification prompt from an unrelated HTTP 403.
+fn response_step_up_error_code(value: &Value) -> Option<&str> {
+    value
+        .get("error")
+        .and_then(Value::as_str)
+        .filter(|code| code.starts_with("STEP_UP_"))
 }
 
 pub fn parse_login_payload(value: Value) -> Result<LoginPayload, String> {
@@ -2237,19 +2476,40 @@ pub fn test_payload(model_id: &str) -> Value {
 mod tests {
     use super::{
         default_request_timeout, merge_export_payload, model_metadata_timeout,
-        normalize_account_page, response_error_message, validate_account_page_request,
-        validate_export_payload_selection, strong_etag, Account, AccountGroup, AccountListQuery,
-        AccountOperationResult, AccountPage, SseByteBudget, Sub2ApiClient, DEFAULT_ACCOUNT_PAGE_SIZE,
-        MAX_ACCOUNT_PAGE_NUMBER, MAX_ACCOUNT_PAGE_SIZE, MAX_EXPORT_URL_BYTES,
+        normalize_account_page, response_error_message, response_step_up_error_code, strong_etag,
+        test_transport_failure_message, validate_account_page_request,
+        validate_export_payload_selection, Account, AccountGroup, AccountListQuery,
+        AccountOperationResult, AccountPage, ExportAccountIdentity, SseByteBudget, Sub2ApiClient,
+        DEFAULT_ACCOUNT_PAGE_SIZE, MAX_ACCOUNT_PAGE_NUMBER, MAX_ACCOUNT_PAGE_SIZE,
+        MAX_EXPORT_URL_BYTES,
     };
     use crate::server_url::ServerUrl;
-    use reqwest::header::{HeaderMap, HeaderValue, ETAG, IF_MATCH};
+    use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, ETAG, IF_MATCH};
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::time::Duration;
 
     fn client() -> Sub2ApiClient {
         Sub2ApiClient::new(ServerUrl::parse("https://example.test/api/v1").unwrap()).unwrap()
+    }
+
+    fn export_identities(
+        entries: &[(i64, &str, &str, &str)],
+    ) -> HashMap<i64, ExportAccountIdentity> {
+        entries
+            .iter()
+            .map(|(id, name, platform, account_type)| {
+                (
+                    *id,
+                    ExportAccountIdentity {
+                        id: *id,
+                        name: (*name).to_owned(),
+                        platform: (*platform).to_owned(),
+                        account_type: (*account_type).to_owned(),
+                    },
+                )
+            })
+            .collect()
     }
 
     fn account(id: i64, name: &str) -> Account {
@@ -2320,8 +2580,38 @@ mod tests {
     }
 
     #[test]
+    fn preserves_step_up_error_codes_for_the_export_flow() {
+        let value = json!({
+            "error": "STEP_UP_REQUIRED",
+            "message": "Recent two-factor verification is required"
+        });
+
+        assert_eq!(response_step_up_error_code(&value), Some("STEP_UP_REQUIRED"));
+        assert_eq!(
+            response_step_up_error_code(&json!({ "error": "FORBIDDEN" })),
+            None
+        );
+    }
+
+    #[test]
     fn uses_a_ninety_second_default_request_timeout() {
         assert_eq!(default_request_timeout(), Duration::from_secs(90));
+    }
+
+    #[test]
+    fn preserves_test_transport_timeout_when_the_outer_error_text_is_generic() {
+        assert_eq!(
+            test_transport_failure_message(
+                "Test stream",
+                true,
+                "error sending request for url (https://example.test)",
+            ),
+            "Test stream timed out"
+        );
+        assert_eq!(
+            test_transport_failure_message("Test request", false, "connection reset"),
+            "Test request failed: connection reset"
+        );
     }
 
     #[test]
@@ -2352,6 +2642,22 @@ mod tests {
 
     #[test]
     fn group_and_account_mutation_requests_match_the_upstream_admin_api() {
+        let step_up = client().step_up_totp_request("token", "123456").build().unwrap();
+        assert_eq!(step_up.method(), reqwest::Method::POST);
+        assert_eq!(
+            step_up.url().as_str(),
+            "https://example.test/api/v1/user/totp/step-up"
+        );
+        assert_eq!(
+            step_up.headers().get(AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer token"))
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(step_up.body().unwrap().as_bytes().unwrap())
+                .unwrap(),
+            json!({ "code": "123456" })
+        );
+
         let list_groups = client().list_groups_request("token").build().unwrap();
         assert_eq!(list_groups.method(), reqwest::Method::GET);
         assert_eq!(
@@ -2650,7 +2956,7 @@ mod tests {
         assert!(validate_account_page_request(MAX_ACCOUNT_PAGE_NUMBER, MAX_ACCOUNT_PAGE_SIZE).is_ok());
         assert!(validate_account_page_request(MAX_ACCOUNT_PAGE_NUMBER + 1, 20).is_err());
         assert!(validate_account_page_request(1, MAX_ACCOUNT_PAGE_SIZE + 1).is_err());
-        assert_eq!(DEFAULT_ACCOUNT_PAGE_SIZE, 100);
+        assert_eq!(DEFAULT_ACCOUNT_PAGE_SIZE, 20);
     }
 
     #[test]
@@ -2728,19 +3034,31 @@ mod tests {
     }
 
     #[test]
-    fn export_payload_rejects_records_without_verifiable_ids() {
+    fn export_payload_accepts_current_official_idless_records_with_selected_snapshots() {
         let requested = [7_i64].into_iter().collect();
+        let identities = export_identities(&[(7, "Official backup record", "openai", "oauth")]);
         let official_payload = json!({
             "accounts": [{
                 "name": "Official backup record",
                 "platform": "openai",
-                "account_data": { "type": "oauth" }
+                "type": "oauth",
+                "credentials": { "access_token": "selected" }
             }]
+        });
+        let wrong_scope = json!({
+            "accounts": [
+                {
+                    "name": "Unexpected account",
+                    "platform": "openai",
+                    "type": "oauth",
+                    "credentials": { "access_token": "unexpected" }
+                }
+            ]
         });
         let ignored_selection = json!({
             "accounts": [
-                { "name": "Unexpected first", "platform": "openai" },
-                { "name": "Unexpected second", "platform": "openai" }
+                { "name": "Official backup record", "platform": "openai", "type": "oauth", "credentials": {} },
+                { "name": "Unexpected second", "platform": "openai", "type": "oauth", "credentials": {} }
             ]
         });
         let official_shadow = json!({ "accounts": [], "skipped_shadows": 1 });
@@ -2748,14 +3066,30 @@ mod tests {
         let duplicate = json!({ "accounts": [{ "id": 7 }, { "id": "7" }] });
         let invalid_id = json!({ "accounts": [{ "id": null }] });
 
-        let missing_id = validate_export_payload_selection(&official_payload, &requested)
-            .expect_err("ID-less credentials cannot be proven to match the selected scope");
-        assert!(missing_id.contains("未提供可验证的账号 ID"));
-        assert!(validate_export_payload_selection(&official_shadow, &requested).is_ok());
-        assert!(validate_export_payload_selection(&ignored_selection, &requested).is_err());
-        assert!(validate_export_payload_selection(&unselected, &requested).is_err());
-        assert!(validate_export_payload_selection(&duplicate, &requested).is_err());
-        assert!(validate_export_payload_selection(&invalid_id, &requested).is_err());
+        assert!(
+            validate_export_payload_selection(&official_payload, &requested, &identities).is_ok()
+        );
+        assert!(
+            validate_export_payload_selection(&official_shadow, &requested, &identities).is_ok()
+        );
+        assert!(validate_export_payload_selection(&wrong_scope, &requested, &identities).is_err());
+        assert!(
+            validate_export_payload_selection(&ignored_selection, &requested, &identities).is_err()
+        );
+        assert!(
+            validate_export_payload_selection(&official_payload, &requested, &HashMap::new())
+                .unwrap_err()
+                .contains("账号快照不完整")
+        );
+        assert!(
+            validate_export_payload_selection(&unselected, &requested, &HashMap::new()).is_err()
+        );
+        assert!(
+            validate_export_payload_selection(&duplicate, &requested, &HashMap::new()).is_err()
+        );
+        assert!(
+            validate_export_payload_selection(&invalid_id, &requested, &HashMap::new()).is_err()
+        );
     }
 
     #[test]
@@ -2772,9 +3106,10 @@ mod tests {
             ]
         });
 
-        let error = validate_export_payload_selection(&mixed_payload, &requested).unwrap_err();
+        let error = validate_export_payload_selection(&mixed_payload, &requested, &HashMap::new())
+            .unwrap_err();
 
-        assert!(error.contains("未提供可验证的账号 ID"));
+        assert!(error.contains("混合了带 ID 和不带 ID"));
     }
 
     #[test]

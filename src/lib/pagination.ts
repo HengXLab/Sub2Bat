@@ -3,7 +3,7 @@ export const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200] as const;
 export const MAX_ACCOUNT_PAGE_NUMBER = 999_999;
 
 export type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
-export const DEFAULT_ACCOUNT_PAGE_SIZE: PageSize = PAGE_SIZE_OPTIONS[0];
+export const DEFAULT_ACCOUNT_PAGE_SIZE: PageSize = 20;
 export type PaginationItem = number | "ellipsis-start" | "ellipsis-end";
 export type SortDirection = "asc" | "desc";
 

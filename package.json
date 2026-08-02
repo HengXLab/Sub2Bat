@@ -1,7 +1,7 @@
 {
   "name": "sub2bat",
   "private": true,
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Sub2Bat desktop application for Sub2API account testing and batch operations",
   "author": "H.X. (Sub2Bat modifications and maintenance)",
   "contributors": [

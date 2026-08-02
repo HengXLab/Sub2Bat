@@ -10,6 +10,7 @@ const props = defineProps<{
   timestamp: Date;
   disabled?: boolean;
   hint?: string;
+  hideHint?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -61,7 +62,7 @@ function insertToken(token: string) {
       <span>文件名预览</span>
       <output :title="preview">{{ preview }}</output>
     </div>
-    <small>{{ hint ?? "支持日期、时间、数量和导出格式；系统会在下一步选择保存目录。" }}</small>
+    <small v-if="!hideHint">{{ hint ?? "支持日期、时间、数量和导出格式；系统会在下一步选择保存目录。" }}</small>
   </section>
 </template>
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useBatch } from "./useBatch";
-import { UNRECOGNIZED_PLAN_TYPE_FILTER_VALUE } from "../lib/accounts";
+import { matchesAccountRuntimeStatusFilter, UNRECOGNIZED_PLAN_TYPE_FILTER_VALUE } from "../lib/accounts";
 import type { ModelCatalog } from "../types";
 
 const { invokeMock, listenMock } = vi.hoisted(() => ({
@@ -261,6 +261,49 @@ describe("useBatch account plan types", () => {
     expect(page).toMatchObject({ total: 3, page: 1, pageSize: 2, pages: 2, hasMore: false });
     expect(page?.items.map((account) => account.id)).toEqual([1, 4]);
     expect(batch.accounts.value.map((account) => account.id)).toEqual([1, 4]);
+  });
+
+  it("locally paginates derived runtime status filters across every server page", async () => {
+    invokeMock.mockImplementation((_command: string, payload: { input: { page: number } }) => {
+      if (payload.input.page === 1) {
+        return Promise.resolve({
+          items: [
+            { id: 1, name: "Normal", platform: "openai", accountType: "oauth", status: "active" },
+            { id: 2, name: "Rate limited", platform: "openai", accountType: "oauth", status: "active", rateLimitResetAt: "2099-01-01T00:00:00Z" },
+          ],
+          total: 3,
+          page: 1,
+          pageSize: 200,
+          pages: 2,
+          hasMore: true,
+        });
+      }
+      return Promise.resolve({
+        items: [{ id: 3, name: "Rate limited B", platform: "openai", accountType: "oauth", status: "rate_limited" }],
+        total: 3,
+        page: 2,
+        pageSize: 200,
+        pages: 2,
+        hasMore: false,
+      });
+    });
+
+    const batch = useBatch();
+    const page = await batch.loadAccountPageWithLocalFilter(
+      { page: 1, pageSize: 20 },
+      10,
+      (account) => matchesAccountRuntimeStatusFilter(account, "rate_limited"),
+      "账号状态",
+    );
+
+    expect(page).toMatchObject({ total: 2, page: 1, pageSize: 20, pages: 1, hasMore: false });
+    expect(page?.items.map((account) => account.id)).toEqual([2, 3]);
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "list_accounts_page", {
+      input: { page: 1, pageSize: 200 },
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "list_accounts_page", {
+      input: { page: 2, pageSize: 200 },
+    });
   });
 });
 

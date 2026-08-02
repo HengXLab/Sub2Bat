@@ -3,9 +3,11 @@ import { LogOut } from "@lucide/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { version as appVersion } from "../package.json";
 import AccountTable from "./components/AccountTable.vue";
 import AutomationDeleteConfirmDialog from "./components/AutomationDeleteConfirmDialog.vue";
 import AccountExportDialog from "./components/AccountExportDialog.vue";
+import ExportStepUpDialog from "./components/ExportStepUpDialog.vue";
 import AccountOperationsPanel from "./components/AccountOperationsPanel.vue";
 import AccountToolbar from "./components/AccountToolbar.vue";
 import AppLogo from "./components/AppLogo.vue";
@@ -69,6 +71,8 @@ import {
   getAccountRuntimeStatus,
   groupIdFromFilterValue,
   isUnrecognizedPlanType,
+  matchesAccountPlanTypeFilter,
+  matchesAccountRuntimeStatusFilter,
   type LatestTestFilter,
   UNASSIGNED_GROUP_FILTER_VALUE,
 } from "./lib/accounts";
@@ -95,6 +99,19 @@ import type {
   ModelCatalog,
   ModelOption,
 } from "./types";
+
+interface AccountExportIdentity {
+  id: number;
+  name: string;
+  platform: string;
+  accountType: string;
+}
+
+interface AccountExportPayload {
+  fileName: string;
+  includeProxies: boolean;
+  format: AccountExportFormat;
+}
 
 const sessionState = useSession();
 const batch = useBatch();
@@ -145,6 +162,10 @@ const accountExportAccountIds = ref<number[]>([]);
 const accountExportBusy = ref(false);
 const accountExportDirectory = ref("");
 const accountExportDirectoryPickerBusy = ref(false);
+const exportStepUpDialogOpen = ref(false);
+const exportStepUpBusy = ref(false);
+const exportStepUpError = ref<string | null>(null);
+const pendingExportStepUpPayload = ref<AccountExportPayload | null>(null);
 const converterDialogOpen = ref(false);
 const converterDialogKey = ref(0);
 const automationDialogOpen = ref(false);
@@ -175,8 +196,8 @@ const modelScopeResolving = ref(false);
 const MAX_GLOBAL_ACCOUNT_SELECTION = 10_000;
 /** A model catalog can cover the same 1,000,000-account navigation ceiling. */
 const MAX_MODEL_SCOPE_ACCOUNTS = 1_000_000;
-/** Full local pagination is required because Sub2API has no plan-type query. */
-const MAX_PLAN_TYPE_FILTER_ACCOUNTS = 1_000_000;
+/** Full local pagination is required for filters not expressed by Sub2API's list API. */
+const MAX_LOCAL_FILTER_ACCOUNTS = 1_000_000;
 /** Latest-test state exists in this client, so the complete upper-filter scope is resolved locally. */
 const MAX_LATEST_TEST_FILTER_ACCOUNTS = 1_000_000;
 /** Keep individual Tauri payloads modest while still supporting a large scope. */
@@ -352,7 +373,7 @@ const automationBackgroundTask = computed<{
   return { id: rule.id, name: rule.name.trim() || "未命名自动化", phase, progress };
 });
 const accountWorkflowBusy = computed(() => (
-  automationBusy.value || accountActionBusy.value || accountExportBusy.value || reportBusy.value || automaticAutomationDispatching.value
+  automationBusy.value || accountActionBusy.value || accountExportBusy.value || exportStepUpBusy.value || reportBusy.value || automaticAutomationDispatching.value
 ));
 const pendingAccounts = computed(() => accountsForIds(pendingAccountIds.value));
 const pendingOriginalPriorities = computed(() => pendingAccounts.value.map((account) => account.priority ?? null));
@@ -481,9 +502,6 @@ const automationStorageScope = computed<AutomationStorageProfile>(() => ({
   email: sessionState.session.value?.email,
 }));
 const globalSelectionDisabledReason = computed(() => {
-  if (status.value !== ALL_FILTER_VALUE) {
-    return "状态筛选包含客户端运行状态判断，只能安全选择当前页。";
-  }
   if (privacy.value === "__unset__") {
     return "未设置 Privacy 状态需要客户端兼容判断，只能安全选择当前页。";
   }
@@ -492,7 +510,6 @@ const globalSelectionDisabledReason = computed(() => {
 const globalSelectionEnabled = computed(() => !globalSelectionDisabledReason.value);
 const pageOnlyReason = computed(() => {
   const reasons: string[] = [];
-  if (status.value !== ALL_FILTER_VALUE) reasons.push("账号状态仅当前页");
   if (privacy.value === "__unset__") reasons.push("未设置 Privacy 状态仅当前页");
   if (accountSortKey.value === "group") reasons.push("分组排序仅当前页");
   return reasons.join("；");
@@ -769,7 +786,10 @@ function accountListQuery(): Omit<AccountPageRequest, "page" | "pageSize"> {
   return {
     platform: optionalAccountFilter(platform.value),
     accountType: optionalAccountFilter(accountType.value),
-    status: optionalAccountFilter(status.value),
+    // Sub2API's raw status query cannot represent all displayed runtime
+    // states. Any selected status is therefore resolved locally from the
+    // complete upper scope instead of being sent as an incompatible value.
+    status: undefined,
     groupId,
     ungrouped: ungrouped || undefined,
     search: search.value.trim() || undefined,
@@ -778,6 +798,15 @@ function accountListQuery(): Omit<AccountPageRequest, "page" | "pageSize"> {
     sortBy,
     sortOrder: sortBy ? accountSortDirection.value : undefined,
   };
+}
+
+function requiresLocalAccountPagination(): boolean {
+  return planType.value !== ALL_FILTER_VALUE || status.value !== ALL_FILTER_VALUE;
+}
+
+function matchesCurrentLocalAccountFilters(account: Account): boolean {
+  return matchesAccountPlanTypeFilter(account.planType, planType.value)
+    && matchesAccountRuntimeStatusFilter(account, status.value);
 }
 
 function latestTestAccountListQuery(): Omit<AccountPageRequest, "page" | "pageSize"> {
@@ -799,9 +828,14 @@ async function reloadAccounts(dashboardRequest = dashboardEpoch, refreshModels =
 
   const requestedPage = accountPageNumber.value;
   const request = accountPageRequest(requestedPage);
-  const loaded = planType.value === ALL_FILTER_VALUE
-    ? await batch.loadAccountPage(request)
-    : await batch.loadAccountPageForPlanType(request, planType.value, MAX_PLAN_TYPE_FILTER_ACCOUNTS);
+  const loaded = requiresLocalAccountPagination()
+    ? await batch.loadAccountPageWithLocalFilter(
+      request,
+      MAX_LOCAL_FILTER_ACCOUNTS,
+      matchesCurrentLocalAccountFilters,
+      "账户类型或账号状态",
+    )
+    : await batch.loadAccountPage(request);
   if (loaded === null || !isCurrentDashboard(dashboardRequest)) return false;
 
   // An account deletion or a changed filter can invalidate the page being
@@ -953,6 +987,26 @@ function accountsOnCurrentPageById(): Map<number, Account> {
   return new Map(batch.accounts.value.map((account) => [account.id, account]));
 }
 
+function toAccountExportIdentity(account: Account): AccountExportIdentity {
+  return {
+    id: account.id,
+    name: account.name,
+    platform: account.platform,
+    accountType: account.accountType,
+  };
+}
+
+function selectedAccountExportIdentities(accountIds: readonly number[]): AccountExportIdentity[] {
+  const visibleAccounts = accountsOnCurrentPageById();
+  return accountIds.map((accountId) => {
+    const account = selectedAccountMetadata.value[accountId] ?? visibleAccounts.get(accountId);
+    if (!account) {
+      throw new Error("所选账号的信息已过期，请刷新账号列表后重新选择并导出。");
+    }
+    return toAccountExportIdentity(account);
+  });
+}
+
 function refreshSelectedAccountMetadata(accounts: readonly Account[]) {
   if (!selectedIds.value.length) return;
   const selected = new Set(selectedIds.value);
@@ -1069,7 +1123,10 @@ async function selectAllFilteredAccounts() {
   globalSelectionPending.value = true;
 
   try {
-    const candidates = await batch.collectMatchingAccounts(accountListQuery(), MAX_GLOBAL_ACCOUNT_SELECTION);
+    const sourceMaximum = requiresLocalAccountPagination()
+      ? MAX_LOCAL_FILTER_ACCOUNTS
+      : MAX_GLOBAL_ACCOUNT_SELECTION;
+    const candidates = await batch.collectMatchingAccounts(accountListQuery(), sourceMaximum);
     if (!candidates || selectionRequest !== accountSelectionRevision) return;
     const accounts = filterAccounts(candidates, {
       platform: platform.value,
@@ -1080,6 +1137,10 @@ async function selectAllFilteredAccounts() {
       search: search.value,
       privacy: privacy.value,
     });
+    if (accounts.length > MAX_GLOBAL_ACCOUNT_SELECTION) {
+      batch.accountError.value = `当前筛选结果超过 ${MAX_GLOBAL_ACCOUNT_SELECTION.toLocaleString()} 个账号，请进一步缩小筛选范围后再全选。`;
+      return;
+    }
     addSelectedAccountRecords(accounts, false);
   } catch (error) {
     if (selectionRequest === accountSelectionRevision) {
@@ -1487,6 +1548,9 @@ function openAccountExportDialog() {
   accountExportAccountIds.value = [...selectedIds.value];
   accountExportDirectory.value = "";
   accountExportError.value = null;
+  exportStepUpDialogOpen.value = false;
+  exportStepUpError.value = null;
+  pendingExportStepUpPayload.value = null;
   accountExportDialogOpen.value = true;
 }
 
@@ -2466,9 +2530,25 @@ async function executeAutomationAction(
     }
     case "exportAccounts": {
       requireAutomationDirectoryAuthorization(action.directory);
-      const data = await invoke<unknown>("export_accounts_data", {
-        input: { accountIds, includeProxies: action.includeProxies },
-      });
+      let data: unknown;
+      try {
+        data = await invoke<unknown>("export_accounts_data", {
+          input: {
+            accountIds,
+            accountIdentities: accounts.map(toAccountExportIdentity),
+            includeProxies: action.includeProxies,
+          },
+        });
+      } catch (error) {
+        const message = readableActionError(error);
+        if (exportStepUpTotpNotEnabled(message)) {
+          throw new Error("此 Sub2API 服务器要求导出前进行二次验证，但尚未启用 TOTP。请先在 Sub2API 中启用 TOTP 后再运行自动化导出。");
+        }
+        if (exportRequiresStepUp(message)) {
+          throw new Error("自动化导出需要近期二次验证。请先在主界面手动导出一次并完成动态验证码验证，再重新运行自动化。");
+        }
+        throw error;
+      }
       requireCurrentAutomationRun(runId, dashboardRequest);
       const extension = action.format === "cpa" ? "zip" : "json";
       const fileName = formatExportFileName(action.fileNameTemplate, {
@@ -2603,14 +2683,52 @@ function automationActionLabel(action: AutomationAction): string {
 }
 
 function closeAccountExportDialog() {
-  if (accountExportBusy.value) return;
+  if (accountExportBusy.value || exportStepUpBusy.value) return;
   accountExportDialogOpen.value = false;
   accountExportError.value = null;
   accountExportAccountIds.value = [];
   accountExportDirectory.value = "";
+  exportStepUpDialogOpen.value = false;
+  exportStepUpError.value = null;
+  pendingExportStepUpPayload.value = null;
 }
 
-async function exportAccounts(payload: { fileName: string; includeProxies: boolean; format: AccountExportFormat }) {
+function exportRequiresStepUp(error: unknown): boolean {
+  const message = readableActionError(error);
+  return /\bSTEP_UP_REQUIRED\b|requires recent two-factor verification/i.test(message);
+}
+
+function exportStepUpTotpNotEnabled(error: unknown): boolean {
+  const message = readableActionError(error);
+  return /\bSTEP_UP_TOTP_NOT_ENABLED\b|step-up.*totp.*not enabled/i.test(message);
+}
+
+function closeExportStepUpDialog() {
+  if (exportStepUpBusy.value) return;
+  exportStepUpDialogOpen.value = false;
+  exportStepUpError.value = null;
+  pendingExportStepUpPayload.value = null;
+}
+
+async function verifyExportStepUp(code: string) {
+  const payload = pendingExportStepUpPayload.value;
+  if (!payload || exportStepUpBusy.value || accountExportBusy.value) return;
+
+  exportStepUpBusy.value = true;
+  exportStepUpError.value = null;
+  try {
+    await invoke<void>("complete_export_step_up", { input: { code } });
+    exportStepUpDialogOpen.value = false;
+    pendingExportStepUpPayload.value = null;
+    await exportAccounts(payload);
+  } catch (error) {
+    exportStepUpError.value = readableActionError(error);
+  } finally {
+    exportStepUpBusy.value = false;
+  }
+}
+
+async function exportAccounts(payload: AccountExportPayload) {
   if (!accountExportAccountIds.value.length || accountExportBusy.value) return;
   if (!accountExportDirectory.value.trim()) {
     accountExportError.value = "请先选择保存目录。";
@@ -2627,9 +2745,11 @@ async function exportAccounts(payload: { fileName: string; includeProxies: boole
   const accountIds = [...accountExportAccountIds.value];
   const directory = accountExportDirectory.value.trim();
   try {
+    const accountIdentities = selectedAccountExportIdentities(accountIds);
     const data = await invoke<unknown>("export_accounts_data", {
       input: {
         accountIds,
+        accountIdentities,
         includeProxies: payload.includeProxies,
       },
     });
@@ -2659,7 +2779,17 @@ async function exportAccounts(payload: { fileName: string; includeProxies: boole
     accountExportAccountIds.value = [];
     accountExportDirectory.value = "";
   } catch (error) {
-    accountExportError.value = readableActionError(error);
+    const message = readableActionError(error);
+    if (exportStepUpTotpNotEnabled(message)) {
+      accountExportError.value = "此 Sub2API 服务器要求导出前进行二次验证，但尚未启用 TOTP。请先在 Sub2API 中启用 TOTP 后再重试。";
+    } else if (exportRequiresStepUp(message)) {
+      pendingExportStepUpPayload.value = { ...payload };
+      exportStepUpError.value = null;
+      accountExportError.value = null;
+      exportStepUpDialogOpen.value = true;
+    } else {
+      accountExportError.value = message;
+    }
   } finally {
     accountExportBusy.value = false;
   }
@@ -2878,7 +3008,11 @@ async function loadModelsForFilteredScope(dashboardRequest = dashboardEpoch) {
   lastModelScope.value = "";
   modelScopeResolving.value = true;
   try {
-    const accountIds = await batch.collectModelScopeAccountIds(accountListQuery(), MAX_MODEL_SCOPE_ACCOUNTS);
+    const accountIds = await batch.collectModelScopeAccountIds(
+      accountListQuery(),
+      MAX_MODEL_SCOPE_ACCOUNTS,
+      matchesCurrentLocalAccountFilters,
+    );
     const scopeStillCurrent = () => (
       collectionRequest === modelScopeCollectionRequest
       && !modelScope.value.length
@@ -3263,7 +3397,10 @@ async function confirmLogout() {
 
       <div v-else class="dashboard-shell">
       <header class="app-header">
-        <AppLogo />
+        <div class="app-header__brand">
+          <AppLogo />
+          <span class="app-header__version">v{{ appVersion }}</span>
+        </div>
         <div class="app-header__session">
           <div>
             <strong>{{ sessionState.session.value?.email }}</strong>
@@ -3450,6 +3587,13 @@ async function confirmLogout() {
         @cancel="closeAccountExportDialog"
         @pick-directory="pickAccountExportDirectory"
         @export="exportAccounts"
+      />
+      <ExportStepUpDialog
+        :open="exportStepUpDialogOpen"
+        :busy="exportStepUpBusy"
+        :error="exportStepUpError"
+        @close="closeExportStepUpDialog"
+        @verify="verifyExportStepUp"
       />
       <BatchConverterDialog :key="converterDialogKey" :open="converterDialogOpen" @cancel="converterDialogOpen = false" />
       <BatchAutomationDialog

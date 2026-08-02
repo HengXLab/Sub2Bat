@@ -13,9 +13,9 @@ import {
 } from "./pagination";
 
 describe("pagination", () => {
-  it("uses ten accounts as the default page size", () => {
+  it("uses twenty accounts as the default page size", () => {
     expect(PAGE_SIZE_OPTIONS).toEqual([10, 20, 50, 100, 200]);
-    expect(DEFAULT_ACCOUNT_PAGE_SIZE).toBe(10);
+    expect(DEFAULT_ACCOUNT_PAGE_SIZE).toBe(20);
   });
 
   it("returns the requested page slice and its visible range", () => {

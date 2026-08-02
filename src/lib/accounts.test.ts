@@ -8,6 +8,7 @@ import {
   getAccountPlanTypeLabel,
   getAccountRuntimeStatus,
   getAccountStatusLabel,
+  getLatestTestResult,
   matchesLatestTestFilter,
   PLATFORM_FILTER_OPTIONS,
   PRIVACY_STATUS_FILTER_OPTIONS,
@@ -55,11 +56,55 @@ describe("account filters", () => {
     expect(matchesLatestTestFilter(undefined, "untested")).toBe(true);
   });
 
+  it("shows a precise connection-exception reason in latest test results", () => {
+    expect(getLatestTestResult(accounts[0], {
+      status: "connectionInterrupted",
+      httpStatus: 403,
+      message: "HTTP 403: region unsupported",
+    }).label).toBe("连接异常（403）");
+
+    expect(getLatestTestResult(accounts[0], {
+      status: "connectionInterrupted",
+      message: "test stream ended with EOF",
+    }).label).toBe("连接异常（EOF）");
+
+    expect(getLatestTestResult(accounts[0], {
+      status: "connectionInterrupted",
+      message: "request timed out",
+    }).label).toBe("连接异常（超时）");
+
+    expect(getLatestTestResult(accounts[0], {
+      status: "connectionInterrupted",
+      message: "Test request failed: error sending request for url (https://example.test)",
+      latencyMs: 90_008,
+    }).label).toBe("连接异常（超时）");
+
+    expect(getLatestTestResult(accounts[0], {
+      status: "connectionInterrupted",
+      message: "Test request failed: error sending request for url (https://example.test)",
+    }).label).toBe("连接异常（网络错误）");
+
+    expect(getLatestTestResult(accounts[0], {
+      status: "connectionInterrupted",
+      message: "Test stream ended before reaching a final result",
+    }).label).toBe("连接异常（流提前结束）");
+
+    expect(getLatestTestResult(accounts[0], {
+      status: "connectionInterrupted",
+    }).label).toBe("连接异常（未知原因）");
+  });
+
   it("keeps the all option first in every fixed filter list", () => {
     expect(PLATFORM_FILTER_OPTIONS[0]).toEqual({ value: "all", label: "全部平台" });
     expect(ACCOUNT_TYPE_FILTER_OPTIONS[0]).toEqual({ value: "all", label: "全部类型" });
     expect(ACCOUNT_STATUS_FILTER_OPTIONS[0]).toEqual({ value: "all", label: "全部状态" });
     expect(PRIVACY_STATUS_FILTER_OPTIONS[0]).toEqual({ value: "all", label: "全部Privacy状态" });
+  });
+
+  it("includes the current Sub2API platform and account-type values", () => {
+    expect(PLATFORM_FILTER_OPTIONS).toContainEqual({ value: "composite", label: "Composite" });
+    expect(ACCOUNT_TYPE_FILTER_OPTIONS).toContainEqual({ value: "upstream", label: "Upstream" });
+    expect(ACCOUNT_TYPE_FILTER_OPTIONS).toContainEqual({ value: "service_account", label: "Service Account" });
   });
 
   it("combines platform, type, group, and status filters", () => {

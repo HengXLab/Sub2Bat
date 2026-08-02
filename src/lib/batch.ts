@@ -68,8 +68,9 @@ export function applyBatchEvent(
 
 function finishedTestStatus(event: Extract<BatchEvent, { kind: "finished" }>): TestStatus {
   if (isQuotaExhausted(event)) return "quotaExhausted";
-  if (isEofConnectionInterrupted(event)) return "connectionInterrupted";
-  return event.status;
+  if (isUnauthorized(event)) return "failed";
+  if (event.status === "failed") return "connectionInterrupted";
+  return "succeeded";
 }
 
 function isQuotaExhausted(event: Extract<BatchEvent, { kind: "finished" }>) {
@@ -80,8 +81,11 @@ function isQuotaExhausted(event: Extract<BatchEvent, { kind: "finished" }>) {
   );
 }
 
-function isEofConnectionInterrupted(event: Extract<BatchEvent, { kind: "finished" }>) {
-  return event.status === "failed" && /\beof\b/i.test(event.message);
+function isUnauthorized(event: Extract<BatchEvent, { kind: "finished" }>) {
+  return event.status === "failed" && (
+    event.httpStatus === 401 ||
+    httpStatusFromMessage(event.message) === 401
+  );
 }
 
 function httpStatusFromMessage(message: string): number | undefined {

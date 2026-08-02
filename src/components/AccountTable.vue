@@ -14,6 +14,7 @@ import {
 } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from "vue";
 import {
+  DEFAULT_ACCOUNT_PAGE_SIZE,
   PAGE_SIZE_OPTIONS,
   clampPage,
   getPageRange,
@@ -43,7 +44,7 @@ const LATEST_TEST_FILTER_OPTIONS: ReadonlyArray<{ value: LatestTestFilter; label
   { value: "untested", label: "未测试" },
   { value: "normal", label: "正常" },
   { value: "rateLimited", label: "限流中" },
-  { value: "connectionInterrupted", label: "连接中断（EOF）" },
+  { value: "connectionInterrupted", label: "连接异常" },
   { value: "error", label: "错误" },
   { value: "queued", label: "等待测试" },
   { value: "testing", label: "测试中" },
@@ -79,7 +80,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   testStates: () => ({}),
   page: 1,
-  pageSize: PAGE_SIZE_OPTIONS[0],
+  pageSize: DEFAULT_ACCOUNT_PAGE_SIZE,
   total: 0,
   pageCount: 1,
   truncated: false,
@@ -285,10 +286,14 @@ function formatLatency(latencyMs: number | undefined): string {
 }
 
 function testResultTitle(result: LatestTestResult): string {
-  const code = result.httpStatus === undefined ? "" : `（${result.httpStatus}）`;
+  const code = shouldShowTestResultCode(result) ? `（${result.httpStatus}）` : "";
   const status = [result.label, code].filter(Boolean).join("");
   const summary = [status, formatLatency(result.latencyMs)].filter(Boolean).join(" ");
   return [result.notice, summary, result.message].filter(Boolean).join("\n");
+}
+
+function shouldShowTestResultCode(result: LatestTestResult): boolean {
+  return result.httpStatus !== undefined && !result.label.includes(`（${result.httpStatus}）`);
 }
 
 function testResultFor(account: Account): LatestTestResult {
@@ -722,7 +727,7 @@ function setPageSize(size: PageSize) {
                 :title="testResultTitle(result)"
               >
                 <span class="test-result__label">{{ result.label }}</span>
-                <span v-if="result.httpStatus !== undefined" class="test-result__code">（{{ result.httpStatus }}）</span>
+                <span v-if="shouldShowTestResultCode(result)" class="test-result__code">（{{ result.httpStatus }}）</span>
               </span>
             </template>
             <template v-else-if="column.id === 'testTime'">

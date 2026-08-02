@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { applyBatchEvent, createTestStates } from "./batch";
 
 describe("batch test state", () => {
-  it("updates a row from testing to a terminal failure with its message", () => {
+  it("puts non-401 failures into the connection-interrupted category", () => {
     const states = createTestStates([10, 11]);
     const testing = applyBatchEvent(states, {
       kind: "testing",
@@ -19,12 +19,53 @@ describe("batch test state", () => {
     });
 
     expect(finished[10]).toMatchObject({
-      status: "failed",
+      status: "connectionInterrupted",
       latencyMs: 240,
       message: "model is unavailable",
     });
     expect(finished[10].testedAt).toEqual(expect.any(String));
     expect(finished[11]).toEqual({ status: "queued" });
+  });
+
+  it("keeps HTTP 401 responses in the error category", () => {
+    const states = createTestStates([10]);
+
+    const finished = applyBatchEvent(states, {
+      kind: "finished",
+      runId: "run-1",
+      accountId: 10,
+      status: "failed",
+      httpStatus: 401,
+      latencyMs: 240,
+      message: "HTTP 401: unauthorized",
+    });
+
+    expect(finished[10]).toMatchObject({
+      status: "failed",
+      httpStatus: 401,
+    });
+  });
+
+  it("puts non-401 HTTP failures into the connection-interrupted category", () => {
+    const statusCodes = [400, 403, 404, 409, 422, 500, 503];
+
+    for (const [index, httpStatus] of statusCodes.entries()) {
+      const accountId = index + 1;
+      const finished = applyBatchEvent(createTestStates([accountId]), {
+        kind: "finished",
+        runId: "run-1",
+        accountId,
+        status: "failed",
+        httpStatus,
+        latencyMs: 240,
+        message: `HTTP ${httpStatus}: upstream unavailable`,
+      });
+
+      expect(finished[accountId]).toMatchObject({
+        status: "connectionInterrupted",
+        httpStatus,
+      });
+    }
   });
 
   it("marks a row as cancelled without changing completed rows", () => {

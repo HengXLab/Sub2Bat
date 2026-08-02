@@ -37,6 +37,7 @@ export const PLATFORM_FILTER_OPTIONS = [
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
   { value: "grok", label: "Grok" },
+  { value: "composite", label: "Composite" },
 ] as const satisfies readonly AccountFixedFilterOption[];
 
 export const ACCOUNT_TYPE_FILTER_OPTIONS = [
@@ -45,6 +46,8 @@ export const ACCOUNT_TYPE_FILTER_OPTIONS = [
   { value: "setup-token", label: "Setup Token" },
   { value: "apikey", label: "API Key" },
   { value: "bedrock", label: "AWS Bedrock" },
+  { value: "upstream", label: "Upstream" },
+  { value: "service_account", label: "Service Account" },
 ] as const satisfies readonly AccountFixedFilterOption[];
 
 export const ACCOUNT_STATUS_FILTER_OPTIONS = [
@@ -124,7 +127,7 @@ export function filterAccounts(accounts: Account[], filters: AccountFilters): Ac
     const accountTypeMatches = matchesFixedFilter(account.accountType, filters.accountType, accountTypeAliases);
     const planTypeMatches = matchesAccountPlanTypeFilter(account.planType, filters.planType);
     const groupMatches = matchesGroupFilter(account, filters.group);
-    const statusMatches = matchesSub2ApiStatusFilter(account, filters.status);
+    const statusMatches = matchesAccountRuntimeStatusFilter(account, filters.status);
     const privacyMatches = matchesPrivacyStatusFilter(account.privacyMode ?? account.privacyStatus, filters.privacy);
 
     if (!platformMatches || !accountTypeMatches || !planTypeMatches || !groupMatches || !statusMatches || !privacyMatches) {
@@ -368,16 +371,21 @@ export function getLatestTestResult(_account: Account, testState?: TestRowState)
       case "succeeded":
         return { label: "正常", tone: "success", ...common };
       case "quotaExhausted":
-        return { label: "限流中", tone: "warning", ...common, httpStatus: httpStatus ?? 429 };
+        return {
+          label: latestTestLabel("限流中", httpStatus ?? 429),
+          tone: "warning",
+          ...common,
+          httpStatus: httpStatus ?? 429,
+        };
       case "connectionInterrupted":
         return {
-          label: "连接中断（EOF）",
+          label: connectionExceptionLabel(httpStatus, testState.message, testState.latencyMs),
           tone: "info",
           ...common,
-          notice: "这部分账号是连接中断，请勿轻易删除，可能是正常账号。",
+          notice: "这部分账号测试未正常完成，请勿轻易删除，账号仍可能正常。",
         };
       case "failed":
-        return { label: "错误", tone: "danger", ...common };
+        return { label: latestTestLabel("错误", httpStatus), tone: "danger", ...common };
       case "testing":
         return { label: "测试中", tone: "info" };
       case "queued":
@@ -391,6 +399,32 @@ export function getLatestTestResult(_account: Account, testState?: TestRowState)
     label: "未测试",
     tone: "neutral",
   };
+}
+
+function connectionExceptionLabel(
+  httpStatus: number | undefined,
+  message: string | undefined,
+  latencyMs: number | undefined,
+): string {
+  if (httpStatus !== undefined) return latestTestLabel("连接异常", httpStatus);
+  const detail = message ?? "";
+  if (/\beof\b/i.test(detail)) return "连接异常（EOF）";
+  if (/(?:timed?\s*out|timeout|deadline exceeded)|超时/i.test(detail)) return "连接异常（超时）";
+  // The backend currently enforces a 90-second request deadline. Retain a
+  // small scheduling margin so older native shells that hide reqwest's source
+  // timeout still show the correct result after frontend hot reload.
+  if (typeof latencyMs === "number" && Number.isFinite(latencyMs) && latencyMs >= 89_000) {
+    return "连接异常（超时）";
+  }
+  if (/test stream ended before reaching a final result/i.test(detail)) return "连接异常（流提前结束）";
+  if (/(?:test\s+(?:request|stream)\s+(?:failed|error)|connection|network|dns|tls|certificate|socket|proxy)/i.test(detail)) {
+    return "连接异常（网络错误）";
+  }
+  return "连接异常（未知原因）";
+}
+
+function latestTestLabel(label: string, httpStatus: number | undefined): string {
+  return httpStatus === undefined ? label : `${label}（${httpStatus}）`;
 }
 
 /** The official `schedulable` field is the non-mutating source of the 调度 display. */
@@ -435,7 +469,12 @@ function matchesFixedFilter(
   return resolveFixedFilterValue(value, aliases) === resolvedFilter;
 }
 
-function matchesSub2ApiStatusFilter(account: Account, filter: string | null | undefined): boolean {
+/**
+ * Matches the runtime state displayed by Sub2API. Several of these states are
+ * derived from account fields, so callers must not assume the list endpoint's
+ * raw `status` parameter has the same semantics.
+ */
+export function matchesAccountRuntimeStatusFilter(account: Account, filter: string | null | undefined): boolean {
   const selected = resolveFixedFilterValue(filter, statusAliases);
   if (!selected || selected === ALL_FILTER_VALUE) return true;
 

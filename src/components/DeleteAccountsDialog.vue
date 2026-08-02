@@ -33,7 +33,7 @@ const protectedAccountSummary = computed(() => {
   const categories: string[] = [];
   if (props.normalCount) categories.push(`${props.normalCount} 个正常账号`);
   if (props.rateLimitedCount) categories.push(`${props.rateLimitedCount} 个限流中账号`);
-  if (props.connectionInterruptedCount) categories.push(`${props.connectionInterruptedCount} 个连接中断账号`);
+  if (props.connectionInterruptedCount) categories.push(`${props.connectionInterruptedCount} 个连接异常账号`);
   if (props.otherCount) categories.push(`${props.otherCount} 个其他非错误或非停用状态账号`);
   return categories.join("、");
 });

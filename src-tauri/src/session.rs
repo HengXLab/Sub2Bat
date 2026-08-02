@@ -10,7 +10,7 @@ use uuid::Uuid;
 const SETTINGS_FILE: &str = "sub2api-batch-tester.json";
 const PROFILE_KEY: &str = "lastProfile";
 const VAULT_SERVICE: &str = "com.sub2api.batchtester";
-pub const DEFAULT_CONCURRENCY: u8 = 10;
+pub const DEFAULT_CONCURRENCY: u8 = 20;
 pub const DEFAULT_AUTO_REFRESH_SECONDS: u16 = 0;
 const FALLBACK_ACCESS_TOKEN_REFRESH_SECONDS: u64 = 15 * 60;
 

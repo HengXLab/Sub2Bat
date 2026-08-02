@@ -1,1 +1,1 @@
-export const DEFAULT_CONCURRENCY = 10;
+export const DEFAULT_CONCURRENCY = 20;

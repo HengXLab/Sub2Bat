@@ -107,7 +107,7 @@ function submit() {
         :extension="fileExtension"
         :timestamp="exportTimestamp"
         :disabled="busy"
-        hint="选择保存目录后，账号文件会按此文件名直接导出。"
+        hide-hint
       />
 
       <label v-if="exportFormat === 'sub2api'" class="account-export-dialog__option">
@@ -122,7 +122,6 @@ function submit() {
 
       <ExportDirectoryField :directory="directory" :disabled="busy" @pick="emit('pickDirectory')" />
 
-      <p class="account-export-dialog__notice">账号导出可能包含凭据及代理连接信息，请仅保存到受信任的位置。</p>
       <p v-if="!fileNameTemplate.trim()" class="account-export-dialog__validation" role="alert">请输入文件名称模板。</p>
       <p v-else-if="!directory.trim()" class="account-export-dialog__validation" role="alert">请先选择保存目录。</p>
       <p v-if="error" class="account-dialog__error" role="alert">{{ error }}</p>
@@ -162,9 +161,8 @@ function submit() {
 .account-export-dialog__option strong { color: var(--text); font-size: 13px; line-height: 1.35; }
 .account-export-dialog__option small { color: var(--muted); font-size: 12px; line-height: 1.45; }
 .account-export-dialog__option code, .account-export-dialog__cpa-note code { padding: 0; color: inherit; background: transparent; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: inherit; }
-.account-export-dialog__cpa-note, .account-export-dialog__notice { margin: 12px 0 0; padding: 9px 11px; border-radius: 6px; font-size: 12px; line-height: 1.5; }
+.account-export-dialog__cpa-note { margin: 12px 0 0; padding: 9px 11px; border-radius: 6px; font-size: 12px; line-height: 1.5; }
 .account-export-dialog__cpa-note { color: var(--info); border: 1px solid var(--cyan-border); background: var(--cyan-subtle); }
-.account-export-dialog__notice { color: var(--warning); border: 1px solid var(--warning-border); background: var(--warning-subtle); }
 .account-export-dialog__validation { margin: 10px 0 0; color: var(--danger); font-size: 12px; line-height: 1.5; }
 .account-dialog__error { margin: 14px 0 0; padding: 10px 12px; color: var(--danger); border: 1px solid var(--danger-border); border-radius: 6px; background: var(--danger-subtle); font-size: 13px; line-height: 1.5; }
 .account-dialog__actions { display: flex; gap: 8px; margin-top: 20px; }

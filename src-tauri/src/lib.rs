@@ -35,6 +35,7 @@ pub fn run() {
             commands::create_group,
             commands::create_group_and_move_accounts,
             commands::export_accounts_data,
+            commands::complete_export_step_up,
             commands::delete_accounts,
             commands::move_accounts_to_group,
             commands::set_accounts_priority,

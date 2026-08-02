@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { LoaderCircle } from "@lucide/vue";
+import { CircleHelp, LoaderCircle } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
+import BatchTestResultGuideDialog from "./BatchTestResultGuideDialog.vue";
 import type { BatchSummary } from "../types";
 
 const props = withDefaults(defineProps<{
@@ -18,6 +19,7 @@ const hasStarted = computed(() => props.summary.total > 0);
 const completionText = computed(() => `${completed.value}/${props.summary.total}`);
 const state = computed(() => (hasStarted.value ? (props.running ? "running" : "complete") : "idle"));
 const testStartedAt = ref<Date | null>(null);
+const resultGuideOpen = ref(false);
 const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
   month: "2-digit",
@@ -86,9 +88,21 @@ const runState = computed(() => {
     <div class="batch-progress__stats" :class="{ 'batch-progress__stats--muted': !hasStarted }">
       <span class="result-stat result-stat--success">正常 {{ summary.succeeded }}</span>
       <span class="result-stat result-stat--quota">限流中 {{ summary.quotaExhausted }}</span>
-      <span class="result-stat result-stat--interrupted">连接中断 {{ summary.connectionInterrupted }}</span>
+      <span class="result-stat result-stat--interrupted">连接异常 {{ summary.connectionInterrupted }}</span>
       <span class="result-stat result-stat--failure">错误 {{ summary.failed }}</span>
       <span class="result-stat result-stat--inactive">停用 {{ inactiveCount }}</span>
+      <div class="batch-progress__result-guide">
+        <button
+          class="batch-progress__result-guide-button"
+          type="button"
+          aria-label="查看测试结果说明"
+          aria-haspopup="dialog"
+          :aria-expanded="resultGuideOpen"
+          @click="resultGuideOpen = true"
+        >
+          <CircleHelp :size="16" aria-hidden="true" />
+        </button>
+      </div>
     </div>
     <div
       class="progress-track"
@@ -102,5 +116,6 @@ const runState = computed(() => {
       <span class="progress-track__fill" :style="{ width: `${percent}%` }"></span>
       <span class="progress-track__label" :class="{ 'progress-track__label--on-fill': percent >= 50 }">{{ percent }}%</span>
     </div>
+    <BatchTestResultGuideDialog :open="resultGuideOpen" @close="resultGuideOpen = false" />
   </section>
 </template>

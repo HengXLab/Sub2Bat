@@ -1,8 +1,8 @@
 use crate::{
     api::{
         Account, AccountGroup, AccountListQuery, AccountOperationResult, AccountPage, AuthTokens,
-        LoginPayload, RefreshError, Sub2ApiClient, DEFAULT_ACCOUNT_PAGE_SIZE,
-        MAX_ACCOUNT_PAGE_NUMBER, MAX_ACCOUNT_PAGE_SIZE,
+        ExportAccountIdentity, LoginPayload, RefreshError, Sub2ApiClient,
+        DEFAULT_ACCOUNT_PAGE_SIZE, MAX_ACCOUNT_PAGE_NUMBER, MAX_ACCOUNT_PAGE_SIZE,
     },
     automation_claim::{
         acquire_scheduled_automation_execution_lease,
@@ -266,8 +266,21 @@ pub struct RenameAccountsInput {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ExportAccountIdentityInput {
+    pub id: i64,
+    pub name: String,
+    pub platform: String,
+    pub account_type: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportAccountsDataInput {
     pub account_ids: Vec<i64>,
+    /// Current official backups intentionally omit source IDs. The UI sends
+    /// these public fields so the backend can still reject a mismatched scope.
+    #[serde(default)]
+    pub account_identities: Vec<ExportAccountIdentityInput>,
     #[serde(default = "default_include_proxies")]
     pub include_proxies: bool,
 }
@@ -724,7 +737,21 @@ pub async fn export_accounts_data(
     state: State<'_, AppState>,
     input: ExportAccountsDataInput,
 ) -> Result<serde_json::Value, String> {
-    let account_ids = validate_account_ids(input.account_ids)?;
+    let ExportAccountsDataInput {
+        account_ids,
+        account_identities,
+        include_proxies,
+    } = input;
+    let account_ids = validate_account_ids(account_ids)?;
+    let account_identities = account_identities
+        .into_iter()
+        .map(|identity| ExportAccountIdentity {
+            id: identity.id,
+            name: identity.name,
+            platform: identity.platform,
+            account_type: identity.account_type,
+        })
+        .collect::<Vec<_>>();
     let request = active_session(&app, state.inner()).await?;
     let client = Sub2ApiClient::new(request.session.server.clone())?;
     run_session_request(
@@ -734,8 +761,34 @@ pub async fn export_accounts_data(
         client.export_accounts_data(
             &request.session.tokens.access_token,
             &account_ids,
-            input.include_proxies,
+            &account_identities,
+            include_proxies,
         ),
+    )
+    .await
+}
+
+/// Completes a recent TOTP step-up verification for the active admin session.
+/// Sub2API v0.1.169 can require this before exposing credential-bearing
+/// account exports. Login 2FA does not grant this separate authorization.
+#[tauri::command]
+pub async fn complete_export_step_up(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: TotpInput,
+) -> Result<(), String> {
+    let code = input.code.trim();
+    if code.len() != 6 || !code.chars().all(|character| character.is_ascii_digit()) {
+        return Err("请输入 6 位动态验证码。".to_owned());
+    }
+
+    let request = active_session(&app, state.inner()).await?;
+    let client = Sub2ApiClient::new(request.session.server.clone())?;
+    run_session_request(
+        &app,
+        state.inner(),
+        &request,
+        client.complete_step_up_totp(&request.session.tokens.access_token, code),
     )
     .await
 }
@@ -750,6 +803,31 @@ pub async fn delete_accounts(
     let required_statuses = validate_required_delete_statuses(input.required_statuses)?;
     let request = active_session(&app, state.inner()).await?;
     let client = Sub2ApiClient::new(request.session.server.clone())?;
+
+    // Newer Sub2API versions currently omit the ETag required for a safe
+    // conditional delete. Probe before processing any account so a protected
+    // automation run fails as one clear, non-destructive operation.
+    if required_statuses.is_some() {
+        let first_account_id = *account_ids
+            .first()
+            .expect("validated account deletion input is never empty");
+        let capability_check = run_session_request(
+            &app,
+            state.inner(),
+            &request,
+            client.get_account_for_conditional_delete(
+                &request.session.tokens.access_token,
+                first_account_id,
+            ),
+        )
+        .await;
+        if let Err(error) = capability_check {
+            if guarded_delete_requires_unsupported_conditional_api(&error) {
+                return Err(guarded_delete_unsupported_message());
+            }
+        }
+    }
+
     let mut result = AccountOperationResult::for_requested(&account_ids);
 
     for account_id in account_ids {
@@ -2603,6 +2681,15 @@ fn validate_required_delete_statuses(
     Ok(Some(normalized))
 }
 
+fn guarded_delete_requires_unsupported_conditional_api(error: &str) -> bool {
+    error.contains("未提供账号版本标识")
+        || error.contains("未提供可用于条件删除的强版本标识")
+}
+
+fn guarded_delete_unsupported_message() -> String {
+    "当前 Sub2API 服务器未提供受保护删除所需的账号版本标识，已停止执行且没有删除账号。请使用手动删除，或等待 Sub2API 支持 ETag 和 If-Match 条件删除后再启用自动化删除。".to_owned()
+}
+
 fn current_status_matches_delete_guard(status: &str, required_statuses: &HashSet<String>) -> bool {
     required_statuses.contains(&status.trim().to_ascii_lowercase())
 }
@@ -2671,6 +2758,7 @@ mod tests {
         batch_completion_status, current_status_matches_delete_guard,
         cancel_all_model_loads, cancel_model_load_request,
         evaluate_protected_delete_verification, finish_model_load, is_authentication_failure,
+        guarded_delete_requires_unsupported_conditional_api, guarded_delete_unsupported_message,
         record_account_field_readback, validate_account_ids, validate_batch_test_model_id,
         validate_group_id, validate_group_name, validate_list_accounts_page,
         validate_model_account_ids, validate_model_load_request_id,
@@ -2815,6 +2903,18 @@ mod tests {
         assert!(validate_required_delete_statuses(Some(vec!["active".to_owned()])).is_err());
         assert!(validate_required_delete_statuses(Some(Vec::new())).is_err());
         assert_eq!(validate_required_delete_statuses(None), Ok(None));
+    }
+
+    #[test]
+    fn protected_deletion_stops_when_the_server_lacks_conditional_delete_support() {
+        assert!(guarded_delete_requires_unsupported_conditional_api(
+            "服务器未提供账号版本标识，已拒绝受保护删除。"
+        ));
+        assert!(guarded_delete_requires_unsupported_conditional_api(
+            "服务器未提供可用于条件删除的强版本标识，已拒绝受保护删除。"
+        ));
+        assert!(!guarded_delete_requires_unsupported_conditional_api("HTTP 503: unavailable"));
+        assert!(guarded_delete_unsupported_message().contains("没有删除账号"));
     }
 
     #[test]

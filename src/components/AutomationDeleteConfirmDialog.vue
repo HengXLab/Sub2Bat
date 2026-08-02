@@ -21,7 +21,7 @@ const protectedSummary = computed(() => {
   const labels: Record<string, string> = {
     normal: "正常",
     rate_limited: "限流中",
-    connection_interrupted: "连接中断",
+    connection_interrupted: "连接异常",
     untested: "未测试",
     cancelled: "已取消",
     other: "其他非错误或非停用状态",

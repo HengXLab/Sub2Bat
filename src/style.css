@@ -162,6 +162,8 @@ body::-webkit-scrollbar-corner,
 
 .dashboard-shell { min-height: 100vh; background: var(--canvas); }
 .app-header { display: flex; align-items: center; justify-content: space-between; min-height: 64px; padding: 0 28px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.app-header__brand { display: flex; align-items: center; min-width: 0; gap: 12px; }
+.app-header__version { flex: 0 0 auto; color: var(--muted); font-size: 12px; font-weight: 600; line-height: 1; white-space: nowrap; }
 .app-header__session { display: flex; align-items: center; gap: 13px; min-width: 0; }
 .app-header__session > div { display: grid; min-width: 0; text-align: right; }
 .app-header__session strong { overflow: hidden; color: var(--heading); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
@@ -310,6 +312,9 @@ body::-webkit-scrollbar-corner,
 .result-stat--interrupted { color: var(--info); }
 .result-stat--failure { color: var(--danger); }
 .result-stat--inactive { color: var(--muted); }
+.batch-progress__result-guide { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; }
+.batch-progress__result-guide-button { display: inline-grid; width: 24px; height: 24px; padding: 0; color: var(--muted); border: 1px solid var(--border-hover); border-radius: 50%; background: var(--surface); cursor: pointer; place-items: center; }
+.batch-progress__result-guide-button:hover, .batch-progress__result-guide-button:focus-visible { color: var(--brand); border-color: var(--brand); background: var(--brand-hover-subtle); outline: 0; box-shadow: 0 0 0 3px var(--focus-soft); }
 
 .table-shell { position: relative; width: 100%; min-width: 0; overflow: visible; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .table-settings-bar { display: flex; align-items: center; justify-content: space-between; min-height: 52px; padding: 8px 12px; gap: 12px; border-bottom: 1px solid var(--divider); background: var(--surface); border-radius: 8px 8px 0 0; }

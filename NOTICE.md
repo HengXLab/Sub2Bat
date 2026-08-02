@@ -1,6 +1,6 @@
 # Sub2Bat Notice
 
-Sub2Bat 1.1.2
+Sub2Bat 1.1.3
 
 Sub2Bat is an independent derivative work based on:
 
