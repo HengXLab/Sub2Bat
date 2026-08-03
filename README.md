@@ -128,11 +128,15 @@ src-tauri/target/release/bundle/nsis/Sub2Bat_1.1.3_x64-setup.exe
 - `src-tauri/tests/`: Rust 单元测试。
 - `docs/superpowers/`: 设计和实施记录。
 
-## 已验证内容
+## 隐私与账号安全
 
-- 前端：Vitest、TypeScript 检查和 Vite 生产构建。
-- Rust：URL 规范化、登录/TOTP/刷新响应解析、分页 DTO、模型聚合、SSE 终态、批量状态与取消逻辑。
-- 打包：Tauri release 可执行文件和 NSIS x64 安装程序。
+Sub2Bat 是本地桌面工具，不提供中转服务器，你的 Sub2API 地址、管理员密码、账号凭据、导出文件或测试结果均在本地处理。
+
+登录时，账号和密码只会通过你填写的地址发送给对应的 Sub2API 管理站点，用于完成正常登录；程序不会保存明文密码。启用“记住登录”后，保存的是刷新令牌，并存放在 Windows Credential Manager 中。
+
+账号筛选、批量测试、导出、CPA/Sub2API 文件转换、报告生成和自动化规则均在本机处理。导出的文件只会保存到你自己选择的本地目录。
+
+本项目源码公开，用户可以自行审查代码、从源码构建，或使用独立测试账号验证后再用于正式环境。
 
 ## 作者
 
