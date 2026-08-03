@@ -2,7 +2,6 @@
 
 一个可分享的 Windows 桌面工具：登录任意兼容的 sub2api 管理站点后，集中查看账号并批量测试连接。
 
-各版本的主要变化见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 项目介绍
 
